@@ -1,4 +1,4 @@
-# Contador de calorías
+# Contador de calorías V1
 
 PWA sencilla para llevar el diario de calorías y macros. Datos solo en tu móvil.
 
