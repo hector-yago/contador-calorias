@@ -8,6 +8,8 @@ Contador de calorías sencillo tipo Yazio. Proyecto **nuevo**, contexto **person
 - Alojamiento: solo código estático (GitHub Pages) porque iOS exige HTTPS para service worker y cámara. Funciona offline tras la primera carga; buscar/escanear productos nuevos necesita red (Open Food Facts).
 - Sin rachas, sin notificaciones, sin recetas. Sin filtro por supermercado en la búsqueda (decisión del usuario, 2026-11-07).
 - Búsqueda OFF con autocompletado (debounce 500 ms) y reintentos: el endpoint legacy devuelve 503 intermitentes sin cabeceras CORS (el navegador lo ve como error de red). `search.openfoodfacts.org` no envía Access-Control-Allow-Origin, no usable desde el navegador.
+- Búsqueda (src/app/core/search-rank.ts): alimentos básicos → categoría OFF (`en:milks`…) ordenada por popularidad; texto libre filtrado por prefijo en cliente (OFF solo entiende palabras completas). `taxonomy_suggestions` descartado ("leche" devolvía bebidas vegetales).
+- iOS borra los datos de la PWA si se desinstala: NUNCA recomendar quitar y volver a añadir la app sin exportar antes (error cometido el 2026-11-07, el usuario perdió datos).
 - Angular 22 (zoneless, standalone, signals), Vitest, rutas con hash (`withHashLocation`) por GitHub Pages.
 - Escáner: `@zxing/browser` (Safari iOS no tiene `BarcodeDetector`).
 - Código en inglés, UI y docs en castellano. Cobertura ≥ 70 %, `npm audit` sin vulnerabilidades altas.

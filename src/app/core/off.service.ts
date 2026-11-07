@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { Food } from './models';
+import { findCategoryHint, normalize, rankFoods, tokenize } from './search-rank';
 
-const FIELDS = 'code,product_name,product_name_es,brands,stores,nutriments,serving_quantity';
+const FIELDS = 'code,product_name,product_name_es,brands,stores,nutriments,serving_quantity,unique_scans_n';
 const BASE = 'https://world.openfoodfacts.org';
 
 interface OffProduct {
@@ -11,6 +12,7 @@ interface OffProduct {
   brands?: string;
   stores?: string;
   serving_quantity?: number | string;
+  unique_scans_n?: number;
   nutriments?: Record<string, number | string | undefined>;
 }
 
@@ -40,6 +42,7 @@ export const mapProduct = (p: OffProduct): Food | null => {
       fat: Math.round(num(n['fat_100g']) * 10) / 10,
     },
     servingG: serving > 0 ? serving : undefined,
+    popularity: num(p.unique_scans_n) || undefined,
     source: 'off',
   };
 };
@@ -83,28 +86,74 @@ const fetchRetry = async (url: string, signal?: AbortSignal, attempts = 3): Prom
 
 @Injectable({ providedIn: 'root' })
 export class OffService {
-  private readonly cache = new Map<string, Food[]>();
+  private readonly lists = new Map<string, Food[]>();
 
-  async search(term: string, signal?: AbortSignal): Promise<Food[]> {
-    const key = term.trim().toLowerCase();
-    const hit = this.cache.get(key);
-    if (hit) return hit;
+  /** Una página de resultados de España, ordenados por popularidad (cacheada por petición). */
+  private async list(extra: Record<string, string>, page: number, signal?: AbortSignal): Promise<Food[]> {
     const params = new URLSearchParams({
-      search_terms: term,
       search_simple: '1',
       action: 'process',
       json: '1',
-      page_size: '30',
+      page_size: '100',
+      page: String(page),
+      sort_by: 'unique_scans_n',
       fields: FIELDS,
       tagtype_0: 'countries',
       tag_contains_0: 'contains',
       tag_0: 'spain',
+      ...extra,
     });
-    const res = await fetchRetry(`${BASE}/cgi/search.pl?${params}`, signal);
+    const key = params.toString();
+    const hit = this.lists.get(key);
+    if (hit) return hit;
+    const res = await fetchRetry(`${BASE}/cgi/search.pl?${key}`, signal);
     const json = (await res.json()) as { products?: OffProduct[] };
     const foods = (json.products ?? []).map(mapProduct).filter((f): f is Food => f !== null);
-    this.cache.set(key, foods);
+    this.lists.set(key, foods);
     return foods;
+  }
+
+  private category(tag: string, page: number, signal?: AbortSignal): Promise<Food[]> {
+    return this.list({ tagtype_1: 'categories', tag_contains_1: 'contains', tag_1: tag }, page, signal);
+  }
+
+  /**
+   * Búsqueda tolerante: "leche desnat" encuentra "Leche desnatada". Los alimentos básicos se buscan en su
+   * categoría (las leches primero) y el resto de palabras filtran por prefijo. Open Food Facts solo entiende
+   * palabras completas, así que la última (que puede estar a medias) se aplica aquí, en el cliente.
+   */
+  async search(term: string, signal?: AbortSignal): Promise<Food[]> {
+    const tokens = tokenize(term);
+    if (!tokens.length) return [];
+    const hint = findCategoryHint(tokens);
+    const extra = tokens.filter((_, i) => i !== hint?.index);
+    const seen = new Set<string>();
+    const out: Food[] = [];
+    const add = (foods: Food[]): void => {
+      for (const f of foods) {
+        // Mismo nombre y marca = mismo producto repetido en la base (varias fichas): se muestra una.
+        const key = `${normalize(f.name)}|${normalize(f.brand ?? '')}|${f.per100.kcal}`;
+        if (!seen.has(f.id) && !seen.has(key)) {
+          seen.add(f.id);
+          seen.add(key);
+          out.push(f);
+        }
+      }
+    };
+
+    if (hint) {
+      let pool = await this.category(hint.tag, 1, signal);
+      if (extra.length) pool = [...pool, ...(await this.category(hint.tag, 2, signal))];
+      add(rankFoods(pool, tokens, { hintIndex: hint.index, strict: extra.length > 0 }));
+      if (!extra.length || out.length >= 8) return out.slice(0, 60);
+    }
+
+    // Texto libre: se envían las palabras salvo la última (posible prefijo) y se filtra/ordena aquí.
+    const sent = tokens.length > 1 ? tokens.slice(0, -1) : tokens;
+    const text = await this.list({ search_terms: sent.join(' ') }, 1, signal);
+    const ranked = rankFoods(text, tokens, { strict: true });
+    add(ranked.length ? ranked : rankFoods(text, tokens));
+    return out.slice(0, 60);
   }
 
   async byBarcode(code: string): Promise<Food | null> {

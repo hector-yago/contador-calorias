@@ -47,6 +47,8 @@ export interface Food {
   /** Valores por 100 g (o 100 ml). */
   per100: Macros;
   servingG?: number;
+  /** Escaneos en Open Food Facts: sirve para ordenar por popularidad. */
+  popularity?: number;
   source: 'off' | 'manual';
   lastUsed?: number;
   useCount?: number;

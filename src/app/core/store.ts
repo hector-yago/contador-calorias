@@ -1,6 +1,7 @@
 import { Injectable, computed, signal } from '@angular/core';
 import { AppDb } from './db';
 import { scaleMacros } from './calc';
+import { rankFoods, tokenize } from './search-rank';
 import { todayIso } from './dates';
 import {
   BackupFile,
@@ -171,12 +172,9 @@ export class Store {
   }
 
   async searchLocalFoods(term: string): Promise<Food[]> {
-    const t = term.trim().toLowerCase();
-    if (!t) return [];
-    return this.db.foods
-      .filter((f) => `${f.name} ${f.brand ?? ''}`.toLowerCase().includes(t))
-      .limit(20)
-      .toArray();
+    const tokens = tokenize(term);
+    if (!tokens.length) return [];
+    return rankFoods(await this.db.foods.toArray(), tokens, { strict: true }).slice(0, 20);
   }
 
   findFoodByBarcode(code: string): Promise<Food | undefined> {
