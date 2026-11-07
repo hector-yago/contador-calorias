@@ -45,6 +45,8 @@ export class Store {
   /** Día seleccionado en Diario/Resumen. */
   readonly selectedDate = signal(todayIso());
   readonly persisted = signal<boolean | null>(null);
+  /** Fecha ISO de la última copia exportada o importada en este dispositivo. */
+  readonly lastBackup = signal<string | null>(this.readBackupMark());
 
   readonly latestKg = computed(() => {
     const w = this.weights();
@@ -60,6 +62,28 @@ export class Store {
     } catch {
       this.persisted.set(null);
     }
+  }
+
+  private readBackupMark(): string | null {
+    try {
+      return localStorage.getItem('lastBackup');
+    } catch {
+      return null;
+    }
+  }
+
+  markBackup(): void {
+    const now = new Date().toISOString();
+    this.lastBackup.set(now);
+    try {
+      localStorage.setItem('lastBackup', now);
+    } catch {
+      /* sin almacenamiento: solo se pierde el aviso */
+    }
+  }
+
+  async hasData(): Promise<boolean> {
+    return (await this.db.entries.count()) > 0;
   }
 
   private bump(): void {

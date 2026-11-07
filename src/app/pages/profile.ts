@@ -13,6 +13,14 @@ import { Store } from '../core/store';
     <div class="page stack">
       <h1>Perfil</h1>
 
+      @if (backupDue(); as d) {
+        <div class="card due">
+          <strong>{{ d }}</strong>
+          <div class="muted">Si borras la app o cambias de móvil, los datos no se pueden recuperar sin una copia.</div>
+          <button class="primary" (click)="exportData()">Exportar copia ahora</button>
+        </div>
+      }
+
       <div class="card stack">
         <h2>Peso</h2>
         <div class="row">
@@ -138,6 +146,7 @@ import { Store } from '../core/store';
           <button (click)="file.click()">Importar</button>
           <input #file type="file" accept="application/json,.json" hidden (change)="importData($event)" />
         </div>
+        <div class="muted">{{ lastBackupText() }}</div>
         @if (backupMsg()) {
           <div [class.error]="backupError()" class="muted">{{ backupMsg() }}</div>
         }
@@ -145,6 +154,9 @@ import { Store } from '../core/store';
     </div>
   `,
   styles: `
+    .due {
+      border-color: var(--warn);
+    }
     .spark {
       width: 100%;
       height: 60px;
@@ -175,6 +187,31 @@ export class ProfilePage {
   protected readonly saved = signal(false);
   protected readonly backupMsg = signal('');
   protected readonly backupError = signal(false);
+
+  private readonly hasData = signal(false);
+
+  constructor() {
+    void this.store.hasData().then((v) => this.hasData.set(v));
+  }
+
+  private daysSinceBackup(): number | null {
+    const last = this.store.lastBackup();
+    return last ? Math.floor((Date.now() - new Date(last).getTime()) / 86_400_000) : null;
+  }
+
+  /** Aviso discreto (solo en esta pantalla, sin notificaciones) si hay datos y la copia es antigua. */
+  protected readonly backupDue = computed(() => {
+    if (!this.hasData()) return '';
+    const d = this.daysSinceBackup();
+    if (d === null) return 'Aún no has hecho ninguna copia de seguridad.';
+    return d >= 7 ? `Tu última copia tiene ${d} días.` : '';
+  });
+
+  protected readonly lastBackupText = computed(() => {
+    const d = this.daysSinceBackup();
+    if (d === null) return 'Última copia: ninguna en este dispositivo.';
+    return d === 0 ? 'Última copia: hoy.' : `Última copia: hace ${d} día${d === 1 ? '' : 's'}.`;
+  });
 
   protected readonly validWeight = computed(() => {
     const w = Number(this.weightInput());
@@ -246,6 +283,7 @@ export class ProfilePage {
     try {
       if (navigator.canShare?.({ files: [file] })) {
         await navigator.share({ files: [file], title: name });
+        this.store.markBackup();
         this.report('Copia exportada.', false);
         return;
       }
@@ -258,6 +296,7 @@ export class ProfilePage {
     a.download = name;
     a.click();
     URL.revokeObjectURL(url);
+    this.store.markBackup();
     this.report('Copia exportada.', false);
   }
 
@@ -270,6 +309,8 @@ export class ProfilePage {
     try {
       await this.store.importAll(JSON.parse(await file.text()));
       this.form.set(structuredClone(this.store.profile()));
+      this.store.markBackup();
+      this.hasData.set(await this.store.hasData());
       this.report('Copia importada.', false);
     } catch (e) {
       this.report((e as Error).message || 'No se pudo importar el archivo.', true);
