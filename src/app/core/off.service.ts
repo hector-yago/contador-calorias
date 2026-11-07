@@ -1,18 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Food } from './models';
 
-export const STORES = [
-  'Mercadona',
-  'Lidl',
-  'Dia',
-  'Aldi',
-  'Carrefour',
-  'Alcampo',
-  'Ahorramas',
-  'Hipercor',
-  'Family Cash',
-];
-
 const FIELDS = 'code,product_name,product_name_es,brands,stores,nutriments,serving_quantity';
 const BASE = 'https://world.openfoodfacts.org';
 
@@ -25,14 +13,6 @@ interface OffProduct {
   serving_quantity?: number | string;
   nutriments?: Record<string, number | string | undefined>;
 }
-
-const slug = (s: string): string =>
-  s
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
 
 const num = (v: unknown): number => {
   const n = typeof v === 'string' ? parseFloat(v) : (v as number);
@@ -64,9 +44,51 @@ export const mapProduct = (p: OffProduct): Food | null => {
   };
 };
 
+export class OffError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Open Food Facts devuelve 503/429 de forma intermitente por saturación (y esas respuestas no llevan
+ * cabeceras CORS, por lo que el navegador las ve como error de red). Se reintenta con espera creciente.
+ */
+const fetchRetry = async (url: string, signal?: AbortSignal, attempts = 3): Promise<Response> => {
+  let lastStatus: number | undefined;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, { signal });
+      if (res.ok || res.status === 404) return res;
+      lastStatus = res.status;
+      if (res.status < 500 && res.status !== 429) break;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') throw e;
+    }
+    if (i < attempts - 1) await sleep(500 * (i + 1) ** 2);
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new OffError('Sin conexión a Internet.');
+  }
+  throw new OffError(
+    'Open Food Facts está saturado o no responde ahora mismo. Inténtalo de nuevo en unos segundos.',
+    lastStatus,
+  );
+};
+
 @Injectable({ providedIn: 'root' })
 export class OffService {
-  async search(term: string, store?: string): Promise<Food[]> {
+  private readonly cache = new Map<string, Food[]>();
+
+  async search(term: string, signal?: AbortSignal): Promise<Food[]> {
+    const key = term.trim().toLowerCase();
+    const hit = this.cache.get(key);
+    if (hit) return hit;
     const params = new URLSearchParams({
       search_terms: term,
       search_simple: '1',
@@ -78,21 +100,16 @@ export class OffService {
       tag_contains_0: 'contains',
       tag_0: 'spain',
     });
-    if (store) {
-      params.set('tagtype_1', 'stores');
-      params.set('tag_contains_1', 'contains');
-      params.set('tag_1', slug(store));
-    }
-    const res = await fetch(`${BASE}/cgi/search.pl?${params}`);
-    if (!res.ok) throw new Error(`Open Food Facts respondió ${res.status}`);
+    const res = await fetchRetry(`${BASE}/cgi/search.pl?${params}`, signal);
     const json = (await res.json()) as { products?: OffProduct[] };
-    return (json.products ?? []).map(mapProduct).filter((f): f is Food => f !== null);
+    const foods = (json.products ?? []).map(mapProduct).filter((f): f is Food => f !== null);
+    this.cache.set(key, foods);
+    return foods;
   }
 
   async byBarcode(code: string): Promise<Food | null> {
-    const res = await fetch(`${BASE}/api/v2/product/${encodeURIComponent(code)}.json?fields=${FIELDS}`);
+    const res = await fetchRetry(`${BASE}/api/v2/product/${encodeURIComponent(code)}.json?fields=${FIELDS}`);
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`Open Food Facts respondió ${res.status}`);
     const json = (await res.json()) as { status?: number; product?: OffProduct };
     if (json.status !== 1 || !json.product) return null;
     return mapProduct({ ...json.product, code: json.product.code ?? code });

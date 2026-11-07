@@ -1,15 +1,26 @@
 import { Component, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Food } from '../core/models';
+import { OffService } from '../core/off.service';
 import { Store } from '../core/store';
+import { Scanner } from './scanner';
 
 /** Alta manual de un alimento (valores por 100 g). */
 @Component({
   selector: 'app-food-form',
-  imports: [FormsModule],
+  imports: [FormsModule, Scanner],
   template: `
     <div class="card stack">
       <h2>Crear alimento</h2>
+      @if (scanning()) {
+        <app-scanner (detected)="onScanned($event)" />
+        <button (click)="scanning.set(false)">Cancelar escaneo</button>
+      } @else {
+        <button (click)="scanning.set(true)">📷 Escanear código de barras</button>
+      }
+      @if (info()) {
+        <div class="muted">{{ info() }}</div>
+      }
       <label class="field">Nombre
         <input [ngModel]="name()" (ngModelChange)="name.set($event)" />
       </label>
@@ -48,10 +59,13 @@ import { Store } from '../core/store';
 })
 export class FoodForm {
   private readonly store = inject(Store);
+  private readonly off = inject(OffService);
   readonly initialBarcode = input<string>();
   readonly saved = output<Food>();
   readonly cancelled = output<void>();
 
+  protected readonly scanning = signal(false);
+  protected readonly info = signal('');
   protected readonly name = signal('');
   protected readonly brand = signal('');
   protected readonly barcode = signal('');
@@ -66,6 +80,32 @@ export class FoodForm {
       const b = this.initialBarcode();
       if (b) this.barcode.set(b);
     });
+  }
+
+  /** Rellena el código y, si Open Food Facts conoce el producto, los datos (revisables). */
+  protected async onScanned(code: string): Promise<void> {
+    this.scanning.set(false);
+    this.barcode.set(code);
+    this.info.set('Código leído. Buscando datos…');
+    try {
+      const f = await this.off.byBarcode(code);
+      if (!f) {
+        this.info.set('Código leído. No está en Open Food Facts: rellena los datos a mano.');
+        return;
+      }
+      if (!this.name().trim()) this.name.set(f.name);
+      if (!this.brand().trim() && f.brand) this.brand.set(f.brand);
+      if (this.kcal() === null) {
+        this.kcal.set(f.per100.kcal);
+        this.protein.set(f.per100.protein);
+        this.carbs.set(f.per100.carbs);
+        this.fat.set(f.per100.fat);
+        if (f.servingG) this.serving.set(f.servingG);
+      }
+      this.info.set('Datos rellenados desde Open Food Facts: revísalos antes de guardar.');
+    } catch {
+      this.info.set('Código leído. No se pudo consultar Open Food Facts: rellena los datos a mano.');
+    }
   }
 
   protected valid(): boolean {

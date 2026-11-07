@@ -22,7 +22,15 @@ import { FoodPicker, PickedFood } from '../ui/food-picker';
             <strong>Añadir alimento</strong>
             <button class="link" (click)="adding.set(false)">Cerrar</button>
           </div>
-          <app-food-picker mode="buscar" confirmLabel="Incluir" (picked)="addItem($event)" />
+          <div class="tabs">
+            <button [class.on]="addTab() === 'buscar'" (click)="addTab.set('buscar')">Buscar</button>
+            <button [class.on]="addTab() === 'codigo'" (click)="addTab.set('codigo')">Código de barras</button>
+          </div>
+          @if (addTab() === 'buscar') {
+            <app-food-picker mode="buscar" confirmLabel="Incluir" (picked)="addItem($event)" />
+          } @else {
+            <app-food-picker mode="codigo" confirmLabel="Incluir" (picked)="addItem($event)" />
+          }
         } @else {
           <label class="field">Nombre
             <input placeholder="Ej. Desayuno diario" [ngModel]="name()" (ngModelChange)="name.set($event)" />
@@ -67,6 +75,7 @@ export class MealEditor implements OnInit {
   protected readonly name = signal('');
   protected readonly items = signal<MealItem[]>([]);
   protected readonly adding = signal(false);
+  protected readonly addTab = signal<'buscar' | 'codigo'>('buscar');
   protected readonly isNew = computed(() => this.id() === 'new');
 
   protected readonly total = computed(() => this.items().reduce((s, i) => s + (i.per100.kcal * i.grams) / 100, 0));

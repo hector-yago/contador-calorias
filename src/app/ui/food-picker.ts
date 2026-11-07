@@ -1,7 +1,7 @@
 import { Component, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Food } from '../core/models';
-import { OffService, STORES } from '../core/off.service';
+import { OffService } from '../core/off.service';
 import { Store } from '../core/store';
 import { FoodForm } from './food-form';
 import { GramSheet } from './gram-sheet';
@@ -20,21 +20,14 @@ export interface PickedFood {
     @if (creating()) {
       <app-food-form [initialBarcode]="createBarcode()" (saved)="foodReady($event)" (cancelled)="creating.set(false)" />
     } @else if (mode() === 'buscar') {
-      <form class="row" (submit)="$event.preventDefault(); search()">
-        <input type="search" enterkeyhint="search" placeholder="Buscar producto (ej. leche hacendado)" [ngModel]="term()" (ngModelChange)="term.set($event)" name="q" />
-        <button class="primary" type="submit" [disabled]="loading()">Buscar</button>
+      <form class="row" (submit)="$event.preventDefault(); searchNow()">
+        <input type="search" enterkeyhint="search" autocomplete="off" placeholder="Buscar producto (ej. leche hacendado)" [ngModel]="term()" (ngModelChange)="onTerm($event)" name="q" />
       </form>
-      <div class="chips stores">
-        <button class="chip" [class.on]="!store()" (click)="setStore('')">Todos</button>
-        @for (s of stores; track s) {
-          <button class="chip" [class.on]="store() === s" (click)="setStore(s)">{{ s }}</button>
-        }
-      </div>
       @if (loading()) {
         <p class="muted">Buscando…</p>
       }
       @if (error()) {
-        <p class="warn">{{ error() }}</p>
+        <p class="warn">{{ error() }} <button class="link" (click)="searchNow()">Reintentar</button></p>
       }
       @if (!searched() && local().length) {
         <div class="muted">Recientes</div>
@@ -98,9 +91,6 @@ export interface PickedFood {
     form {
       margin-bottom: 8px;
     }
-    .stores {
-      margin-bottom: 8px;
-    }
   `,
 })
 export class FoodPicker {
@@ -111,9 +101,9 @@ export class FoodPicker {
   readonly confirmLabel = input('Añadir');
   readonly picked = output<PickedFood>();
 
-  protected readonly stores = STORES;
   protected readonly term = signal('');
-  protected readonly store = signal('');
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private ctrl: AbortController | undefined;
   protected readonly local = signal<Food[]>([]);
   protected readonly online = signal<Food[]>([]);
   protected readonly loading = signal(false);
@@ -130,27 +120,53 @@ export class FoodPicker {
     void this.store_.recentFoods().then((r) => this.local.set(r));
   }
 
-  protected setStore(s: string): void {
-    this.store.set(s);
-    if (this.term().trim()) void this.search();
+  /** Autocompletado: guardados al instante y Open Food Facts tras una pausa al escribir. */
+  protected onTerm(v: string): void {
+    this.term.set(v);
+    clearTimeout(this.timer);
+    this.ctrl?.abort();
+    const t = v.trim();
+    if (t.length < 2) {
+      this.searched.set(false);
+      this.online.set([]);
+      this.error.set('');
+      this.loading.set(false);
+      void this.store_.recentFoods().then((r) => this.local.set(r));
+      return;
+    }
+    this.searched.set(true);
+    this.error.set('');
+    void this.store_.searchLocalFoods(t).then((l) => {
+      if (this.term().trim() === t) this.local.set(l);
+    });
+    this.loading.set(true);
+    this.timer = setTimeout(() => void this.search(), 500);
   }
 
-  protected async search(): Promise<void> {
+  protected searchNow(): void {
+    clearTimeout(this.timer);
+    if (this.term().trim().length >= 2) void this.search();
+  }
+
+  private async search(): Promise<void> {
     const t = this.term().trim();
-    if (t.length < 2) return;
+    this.ctrl?.abort();
+    const ctrl = new AbortController();
+    this.ctrl = ctrl;
     this.searched.set(true);
     this.loading.set(true);
     this.error.set('');
-    this.online.set([]);
-    this.local.set(await this.store_.searchLocalFoods(t));
     try {
-      const res = await this.off.search(t, this.store() || undefined);
+      const res = await this.off.search(t, ctrl.signal);
+      if (ctrl.signal.aborted) return;
       const localIds = new Set(this.local().map((f) => f.id));
       this.online.set(res.filter((f) => !localIds.has(f.id)));
-    } catch {
-      this.error.set('No se pudo consultar Open Food Facts (¿sin conexión?). Se muestran solo productos guardados.');
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+      this.online.set([]);
+      this.error.set((e as Error).message || 'No se pudo consultar Open Food Facts.');
     } finally {
-      this.loading.set(false);
+      if (this.ctrl === ctrl) this.loading.set(false);
     }
   }
 
@@ -168,10 +184,8 @@ export class FoodPicker {
       const found = (await this.store_.findFoodByBarcode(code)) ?? (await this.off.byBarcode(code));
       if (found) this.selected.set(found);
       else this.notFound.set(code);
-    } catch {
-      const cached = await this.store_.findFoodByBarcode(code);
-      if (cached) this.selected.set(cached);
-      else this.error.set('No se pudo consultar Open Food Facts (¿sin conexión?).');
+    } catch (e) {
+      this.error.set((e as Error).message || 'No se pudo consultar Open Food Facts.');
     } finally {
       this.loading.set(false);
     }
